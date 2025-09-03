@@ -4,7 +4,7 @@ import { checkFreeTier } from '@/lib/rateLimit';
 
 export async function POST(req: NextRequest) {
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || req.ip || 'unknown';
-  const { allowed, remaining } = checkFreeTier(ip, 100);
+  const { allowed, remaining } = checkFreeTier(ip, 1000);
   if (!allowed) {
     return Response.json({ error: 'Free tier limit reached (5/hour).', remaining }, { status: 429 });
   }
