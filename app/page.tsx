@@ -93,7 +93,7 @@ export default function Page() {
   }
 
   return (
-    <main className="max-w-5xl mx-auto px-4 py-8">
+    <main className="max-w-7xl mx-auto px-4 py-8">
       <h1 className="text-2xl font-bold">Verify Emails</h1>
       <p className="text-gray-500 mt-1">20-step verification with up to 75 sub-checks.</p>
 
