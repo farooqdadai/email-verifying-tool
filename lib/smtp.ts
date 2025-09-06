@@ -1,5 +1,7 @@
 import net from 'net';
 
+export const DEFAULT_HELO = process.env.VERIFIER_HELO_DOMAIN || 'verifier.local';
+
 type Result = { category: 'accept' | 'reject' | 'temp' | 'unknown'; code: number; message: string };
 
 function parseCode(line: string): number {
@@ -9,13 +11,15 @@ function parseCode(line: string): number {
 
 export async function smtpVerifyRcpt(opts: { mxHost: string; email: string; heloDomain?: string; timeoutMs?: number }): Promise<Result> {
   const { mxHost, email } = opts;
-  const helo = opts.heloDomain || 'example.com';
+  const helo = opts.heloDomain || DEFAULT_HELO;
   const timeoutMs = Math.max(3000, Math.min(20000, opts.timeoutMs ?? 9000));
 
   return new Promise<Result>((resolve, reject) => {
     const socket = new net.Socket();
     let buffer = '';
     let settled = false;
+    let useNullSender = true;
+    let triedNonNull = false;
     const cleanup = () => {
       socket.removeAllListeners();
       if (!socket.destroyed) socket.destroy();
@@ -33,6 +37,32 @@ export async function smtpVerifyRcpt(opts: { mxHost: string; email: string; helo
 
     let stage: 'greet' | 'ehlo' | 'mail' | 'rcpt' | 'quit' = 'greet';
 
+    const classifyRcpt = (code: number, line: string): Result['category'] => {
+      const msg = (line || '').toLowerCase();
+      // Positive acknowledgement
+      if (code >= 200 && code < 300) return 'accept';
+
+      // Transient errors / greylisting
+      if (code === 421 || code === 450 || code === 451 || code === 452) return 'temp';
+
+      // Definite mailbox does not exist patterns
+      const hardRej = /(user unknown|unknown user|no such user|mailbox unavailable|mailbox not found|invalid recipient|recipient address rejected|5\.1\.1|5\.1\.0)/i;
+      if (hardRej.test(line)) return 'reject';
+
+      // Policy blocks / blocklists / reputation problems should not be treated as invalid mailbox
+      const policyBlock = /(spamhaus|blocklist|blacklist|blocked|policy|reputation|forbidden|denied)/i;
+      const enhPolicy = /5\.7\.1/; // enhanced status code often used for policy blocks
+      if (policyBlock.test(msg) || enhPolicy.test(msg)) return 'temp';
+
+      // STARTTLS required (common on enterprise gateways)
+      if (code === 530 || /starttls/.test(msg)) return 'temp';
+
+      // Other 5xx — assume reject unless proven otherwise
+      if (code >= 500) return 'reject';
+
+      return 'temp';
+    };
+
     socket.on('data', (data) => {
       buffer += data.toString('utf8');
       const lines = buffer.split(/\r?\n/);
@@ -47,16 +77,29 @@ export async function smtpVerifyRcpt(opts: { mxHost: string; email: string; helo
           if (code >= 200 && code < 400) { stage = 'ehlo'; send(`EHLO ${helo}`); }
           else return finish({ category: 'temp', code, message: line });
         } else if (stage === 'ehlo') {
-          if (code >= 200 && code < 400) { stage = 'mail'; send('MAIL FROM:<postmaster@' + helo + '>' ); }
+          if (code >= 200 && code < 400) {
+            stage = 'mail';
+            const fromAddr = useNullSender ? '<>' : '<postmaster@' + helo + '>';
+            send('MAIL FROM:' + fromAddr);
+          }
           else return finish({ category: 'temp', code, message: line });
         } else if (stage === 'mail') {
           if (code >= 200 && code < 400) { stage = 'rcpt'; send('RCPT TO:<' + email + '>' ); }
-          else return finish({ category: 'temp', code, message: line });
+          else {
+            // If server rejects null sender, retry once with non-null
+            if (useNullSender && !triedNonNull && code >= 500) {
+              useNullSender = false; triedNonNull = true;
+              stage = 'mail';
+              const fromAddr = '<postmaster@' + helo + '>';
+              send('MAIL FROM:' + fromAddr);
+            } else {
+              return finish({ category: 'temp', code, message: line });
+            }
+          }
         } else if (stage === 'rcpt') {
           clearT();
-          if (code >= 200 && code < 300) return finish({ category: 'accept', code, message: line });
-          if (code >= 500) return finish({ category: 'reject', code, message: line });
-          return finish({ category: 'temp', code, message: line });
+          const cat = classifyRcpt(code, line);
+          return finish({ category: cat, code, message: line });
         }
       }
     });
@@ -83,9 +126,9 @@ export async function smtpProbeWithCatchAll(opts: { mxHosts: string[]; targetEma
   let last: any = null;
   for (const host of hosts) {
     try {
-      const rcpt = await smtpVerifyRcpt({ mxHost: host, email: targetEmail, heloDomain: domain, timeoutMs });
+      const rcpt = await smtpVerifyRcpt({ mxHost: host, email: targetEmail, heloDomain: DEFAULT_HELO, timeoutMs });
       const randomAddr = `${randomLocalPart()}@${domain}`;
-      const ctrl = await smtpVerifyRcpt({ mxHost: host, email: randomAddr, heloDomain: domain, timeoutMs });
+      const ctrl = await smtpVerifyRcpt({ mxHost: host, email: randomAddr, heloDomain: DEFAULT_HELO, timeoutMs });
       const verdict = deriveVerdict(rcpt, ctrl);
       return { host, rcpt, control: ctrl, verdict } as const;
     } catch (e) {

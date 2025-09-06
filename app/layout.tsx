@@ -2,8 +2,8 @@ import './globals.css';
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
-  title: 'Email MX Verifier',
-  description: 'Check email deliverability via MX records',
+  title: 'Email Verifier',
+  description: 'Verify email deliverability with MX, SMTP, and more. Free and open-source email verification tool.',
 };
 
 export default function RootLayout({

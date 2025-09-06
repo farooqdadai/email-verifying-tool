@@ -2,7 +2,7 @@ import dns from 'dns';
 import net from 'net';
 import crypto from 'crypto';
 import { parseEmail } from './email';
-import { smtpVerifyRcpt, smtpProbeWithCatchAll } from './smtp';
+import { smtpVerifyRcpt, smtpProbeWithCatchAll, DEFAULT_HELO } from './smtp';
 import { roleAccounts, disposableDomains, webmailDomains, parkedDomains, blacklistDomains, spamTrapPatterns, knownActiveEmails } from './checkLists';
 
 const resolver = dns.promises;
@@ -179,6 +179,9 @@ export async function verifyEmailFull(emailInput: string, opts: VerifyOptions = 
       smtpConn = 'fail';
     }
   }
+  // Detect policy/blocklist style responses from RCPT stage (e.g., Spamhaus blocks)
+  const policyBlocked = /spamhaus|blocklist|blacklist|blocked|policy|reputation|forbidden|denied/i.test(smtpMailbox.msg) || /5\.7\.1/.test(smtpMailbox.msg);
+  if (policyBlocked) flags.add('policy_block');
   addStep(steps, 'SMTP connectivity', [
     { name: 'connected to MX', pass: smtpConn === 'ok' },
     { name: 'EHLO/HELO ok (assumed)', pass: smtpConn === 'ok' },
@@ -278,7 +281,10 @@ export async function verifyEmailFull(emailInput: string, opts: VerifyOptions = 
   else if (!validMx || smtpMailbox.cat === 'reject') { status = 'invalid'; detail = smtpMailbox.cat === 'reject' ? `SMTP ${smtpMailbox.code} ${smtpMailbox.msg}` : 'No MX records'; }
   else if (flags.has('catch_all')) { status = 'catch_all'; detail = 'Server accepts all recipients'; }
   else if (smtpMailbox.cat === 'accept') { status = 'valid'; detail = 'SMTP confirmed mailbox'; }
-  else { status = 'unknown'; detail = 'Ambiguous or timed out'; }
+  else {
+    status = 'unknown';
+    detail = policyBlocked && smtpMailbox.msg ? `SMTP ${smtpMailbox.code} ${smtpMailbox.msg}` : 'Ambiguous or timed out';
+  }
 
   if (isDisposable) flags.add('disposable');
   if (isRole) flags.add('role_based');

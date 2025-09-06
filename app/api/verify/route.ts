@@ -9,6 +9,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
     const email = String(body?.email ?? '').trim();
+    console.log("email", email)
     const deep: boolean = body?.deep === undefined ? true : Boolean(body?.deep);
     const parsed = parseEmail(email);
     if (!parsed) {
